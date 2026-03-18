@@ -1,10 +1,20 @@
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
 from models import Base # Importing the Base we created in models.py
 
-# Replace this with your actual PostgreSQL credentials later
-# Format: postgresql://user:password@localhost:5432/dbname
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:admin@localhost:5432/subscription_tracker"
+# Load hidden variables from .env if running locally
+load_dotenv()
+
+# Grab the database URL from Render's Environment Variables.
+# If it's not found (like on your local laptop), it falls back to your local pgAdmin database!
+LOCAL_DB_URL = "postgresql://postgres:admin@localhost:5432/subscription_tracker"
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", LOCAL_DB_URL)
+
+# FIX: Render gives 'postgres://' URLs, but SQLAlchemy strictly requires 'postgresql://'
+if SQLALCHEMY_DATABASE_URL and SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
+    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 # The engine is responsible for establishing the core connection
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
