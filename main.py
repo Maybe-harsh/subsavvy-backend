@@ -65,14 +65,11 @@ app = FastAPI(
     lifespan=lifespan 
 )
 
-# --- CORS CONFIGURATION (THE FIX!) ---
-# This adds your live Vercel URL to the security VIP list
+# --- CORS CONFIGURATION (THE WILDCARD FIX) ---
+# Using ["*"] ensures that no matter what your Vercel URL is, the browser won't block it.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000", 
-        "https://subsavvy-frontend-virid.vercel.app" # Your live Next.js URL
-    ], 
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"], 
     allow_headers=["*"], 
@@ -93,7 +90,6 @@ def favicon():
 @app.post("/token")
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Authenticates a user and returns a JWT token."""
-    # Force lowercase on the username/email input
     user = crud.get_user_by_email(db, email=form_data.username.lower())
     
     if not user or not auth.verify_password(form_data.password, user.password_hash):
@@ -191,7 +187,7 @@ def get_user_alerts(
     alerts = recommendation.generate_alerts_for_user(db=db, user_id=current_user.id)
     return alerts
 
-# --- NETFLIX-STYLE RECOMMENDATION ROUTE ---
+# --- NETFLIX-STYLE RECOMMENDATION ROUTE (WITH TRAILERS & WATCH PROVIDERS) ---
 
 @app.get("/recommendations")
 def get_recommendations(current_user: models.User = Depends(auth.get_current_user)):
@@ -248,7 +244,7 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
             media_type = show.get('media_type', 'tv') 
             show_id = show['id']
 
-            # --- 3. FETCH THE YOUTUBE TRAILER ---
+            # FETCH THE YOUTUBE TRAILER
             trailer_url = None
             try:
                 vid_url = f"https://api.themoviedb.org/3/{media_type}/{show_id}/videos?api_key={TMDB_API_KEY}"
@@ -263,24 +259,22 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
             except Exception:
                 pass
 
-            # --- 4. FETCH WATCH PROVIDERS (WHERE TO STREAM) ---
+            # FETCH WATCH PROVIDERS
             providers = []
             watch_link = None
             try:
                 prov_url = f"https://api.themoviedb.org/3/{media_type}/{show_id}/watch/providers?api_key={TMDB_API_KEY}"
                 prov_resp = requests.get(prov_url).json()
-                
                 in_data = prov_resp.get('results', {}).get('IN', {})
                 watch_link = in_data.get('link')
                 in_providers = in_data.get('flatrate', [])
-                
                 for prov in in_providers[:2]: 
                     providers.append({
                         "name": prov.get("provider_name"),
                         "logo": f"https://image.tmdb.org/t/p/w45{prov.get('logo_path')}"
                     })
-            except Exception as e:
-                print(f"Provider Error for {show.get('name')}: {e}")
+            except Exception:
+                pass
 
             results.append({
                 "id": show_id,
@@ -306,7 +300,7 @@ def log_usage(usage: schemas.UsageLogCreate, db: Session = Depends(get_db)):
     return crud.log_subscription_usage(db=db, usage=usage)
 
 
-# --- EXTENSION USAGE ROUTE (UPDATED WITH AI BRAIN & FIXES) ---
+# --- EXTENSION USAGE ROUTE (AI BRAIN INTEGRATED) ---
 @app.post("/usage/extension")
 def log_usage_from_extension(
     usage_req: schemas.UsageLogExtensionCreate, 
@@ -314,30 +308,22 @@ def log_usage_from_extension(
     current_user: models.User = Depends(auth.get_current_user)
 ):
     """Receives ping from Chrome Extension and securely logs it to the authenticated user."""
-    
-    # 1. Find or create the platform
     platform = crud.get_or_create_platform(db, platform_name=usage_req.platform_name)
     
-    # 2. THE TMDB AI BRAIN TRIGGER
     title = getattr(usage_req, 'title', None)
     if title and title != "Unknown Title":
         try:
             discovered_genres = fetch_genres_for_title(title)
-            
             if discovered_genres:
-                current_tastes = getattr(current_user, 'taste_profile', [])
-                if current_tastes is None:
-                    current_tastes = []
-                    
+                current_tastes = getattr(current_user, 'taste_profile', []) or []
                 updated_tastes = list(set(current_tastes + discovered_genres))
-                current_user.taste_profile = updated_tastes[-20:] # Keep top 20
-                
-                print(f"🎬 AI Brain: User {current_user.email} watched '{title}'. Genres added: {discovered_genres}")
-                db.commit() # Save the new Streaming DNA immediately!
+                current_user.taste_profile = updated_tastes[-20:]
+                db.commit() # Immediate save of DNA
+                print(f"🎬 AI Brain: Learned tastes for {current_user.email} from '{title}'")
         except Exception as e:
             print(f"⚠️ TMDB Error: {e}")
 
-    # 3. Log the usage minutes to the specific subscription if it exists
+    # Log minutes to specific subscription if user has it tracked
     sub = db.query(models.Subscription).filter(
         models.Subscription.user_id == current_user.id,
         models.Subscription.platform_id == platform.id
