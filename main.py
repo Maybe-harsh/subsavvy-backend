@@ -3,7 +3,6 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
-from scipy.__config__ import show
 from sqlalchemy.orm import Session
 from database import engine, get_db
 import models
@@ -66,14 +65,17 @@ app = FastAPI(
     lifespan=lifespan 
 )
 
-# --- CORS CONFIGURATION ---
-# This tells FastAPI to trust requests coming from your Next.js frontend
+# --- CORS CONFIGURATION (THE FIX!) ---
+# This adds your live Vercel URL to the security VIP list
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"], # Your Next.js URL
+    allow_origins=[
+        "http://localhost:3000", 
+        "https://subsavvy-frontend-virid.vercel.app" # Your live Next.js URL
+    ], 
     allow_credentials=True,
-    allow_methods=["*"], # Allows all methods including OPTIONS
-    allow_headers=["*"], # Allows all headers including Authorization
+    allow_methods=["*"], 
+    allow_headers=["*"], 
 )
 
 @app.get("/")
@@ -119,7 +121,6 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
 @app.get("/users/me", response_model=schemas.UserResponse)
 def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
     """Fetches the currently logged-in user's profile."""
-    # Notice how we don't need to query the DB here; the auth dependency already did it!
     return current_user
 
 # --- SUBSCRIPTION ROUTES ---
@@ -128,14 +129,11 @@ def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
 def create_subscription_for_user(
     subscription_req: schemas.SubscriptionCreateFrontend, 
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user) # Locks the route
+    current_user: models.User = Depends(auth.get_current_user)
 ):
     """Adds a new subscription to the currently authenticated user's account."""
-    
-    # 1. Look up the UUID for the platform (or create it if it's new)
     platform = crud.get_or_create_platform(db, platform_name=subscription_req.platform_name)
     
-    # 2. Translate the frontend request into the strict database schema
     db_subscription = schemas.SubscriptionCreate(
         platform_id=platform.id,
         cost=subscription_req.cost,
@@ -144,7 +142,6 @@ def create_subscription_for_user(
         status="Active"
     )
     
-    # 3. Save it securely
     return crud.create_user_subscription(db=db, subscription=db_subscription, user_id=current_user.id)
 
 @app.get("/users/me/subscriptions/", response_model=list[schemas.SubscriptionResponse])
@@ -152,7 +149,7 @@ def read_subscriptions(
     skip: int = 0, 
     limit: int = 100, 
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user) # Locks the route
+    current_user: models.User = Depends(auth.get_current_user)
 ):
     """Retrieves all active subscriptions for the currently authenticated user."""
     subscriptions = crud.get_user_subscriptions(db, user_id=current_user.id, skip=skip, limit=limit)
@@ -194,7 +191,7 @@ def get_user_alerts(
     alerts = recommendation.generate_alerts_for_user(db=db, user_id=current_user.id)
     return alerts
 
-# --- NETFLIX-STYLE RECOMMENDATION ROUTE (WITH TRAILERS) ---
+# --- NETFLIX-STYLE RECOMMENDATION ROUTE ---
 
 @app.get("/recommendations")
 def get_recommendations(current_user: models.User = Depends(auth.get_current_user)):
@@ -273,9 +270,8 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
                 prov_url = f"https://api.themoviedb.org/3/{media_type}/{show_id}/watch/providers?api_key={TMDB_API_KEY}"
                 prov_resp = requests.get(prov_url).json()
                 
-                # Grab the India-specific routing data
                 in_data = prov_resp.get('results', {}).get('IN', {})
-                watch_link = in_data.get('link') # <-- The Magic Deep Link!
+                watch_link = in_data.get('link')
                 in_providers = in_data.get('flatrate', [])
                 
                 for prov in in_providers[:2]: 
@@ -294,7 +290,7 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
                 "image": f"https://image.tmdb.org/t/p/w780{image_path}" if image_path else "https://images.unsplash.com/photo-1584905066893-7d5c142ba4e1",
                 "trailer": trailer_url,
                 "providers": providers,
-                "watch_link": watch_link # <-- Sending it to React
+                "watch_link": watch_link 
             })
         
         return results
@@ -310,7 +306,7 @@ def log_usage(usage: schemas.UsageLogCreate, db: Session = Depends(get_db)):
     return crud.log_subscription_usage(db=db, usage=usage)
 
 
-# --- EXTENSION USAGE ROUTE (UPDATED WITH AI BRAIN) ---
+# --- EXTENSION USAGE ROUTE (UPDATED WITH AI BRAIN & FIXES) ---
 @app.post("/usage/extension")
 def log_usage_from_extension(
     usage_req: schemas.UsageLogExtensionCreate, 
@@ -322,12 +318,10 @@ def log_usage_from_extension(
     # 1. Find or create the platform
     platform = crud.get_or_create_platform(db, platform_name=usage_req.platform_name)
     
-    # --- 2. THE TMDB AI BRAIN TRIGGER (Moved UP!) ---
-    # Now it learns your tastes even if you don't track the subscription!
+    # 2. THE TMDB AI BRAIN TRIGGER
     title = getattr(usage_req, 'title', None)
     if title and title != "Unknown Title":
         try:
-            # Assuming fetch_genres_for_title is defined in your file!
             discovered_genres = fetch_genres_for_title(title)
             
             if discovered_genres:
@@ -343,38 +337,20 @@ def log_usage_from_extension(
         except Exception as e:
             print(f"⚠️ TMDB Error: {e}")
 
-    # --- 3. FETCH THE YOUTUBE TRAILER (SMART FALLBACK) ---
-            trailer_url = None
-            try:
-                media_type = show.get('media_type', 'tv') 
-                vid_url = f"https://api.themoviedb.org/3/{media_type}/{show['id']}/videos?api_key={TMDB_API_KEY}"
-                vid_resp = requests.get(vid_url).json()
-                
-                # Get all YouTube videos for this show
-                yt_videos = [v for v in vid_resp.get('results', []) if v.get('site') == 'YouTube']
-                
-                if yt_videos:
-                    # 1st Priority: Official Trailer
-                    best_vid = next((v for v in yt_videos if v.get('type') == 'Trailer'), None)
-                    # 2nd Priority: Teaser
-                    if not best_vid:
-                        best_vid = next((v for v in yt_videos if v.get('type') == 'Teaser'), None)
-                    # 3rd Priority: Just grab the first video they have!
-                    if not best_vid:
-                        best_vid = yt_videos[0]
-                        
-                    trailer_url = f"https://www.youtube.com/embed/{best_vid.get('key')}?autoplay=1"
-            except Exception as e:
-                print(f"⚠️ Could not fetch trailer for {show.get('name')}: {e}")
-        
-    # 4. Log the usage minutes
-    db_usage = models.UsageLog(
-        subscription_id=sub.id,
-        date_logged=usage_req.date_logged,
-        minutes_used=usage_req.minutes_used
-    )
-    db.add(db_usage)
-    db.commit()
+    # 3. Log the usage minutes to the specific subscription if it exists
+    sub = db.query(models.Subscription).filter(
+        models.Subscription.user_id == current_user.id,
+        models.Subscription.platform_id == platform.id
+    ).first()
+    
+    if sub:
+        db_usage = models.UsageLog(
+            subscription_id=sub.id,
+            date_logged=usage_req.date_logged,
+            minutes_used=usage_req.minutes_used
+        )
+        db.add(db_usage)
+        db.commit()
     
     return {"status": "success", "logged_minutes": usage_req.minutes_used, "title": title}
 
@@ -384,7 +360,6 @@ def startup_event():
 
 @app.delete("/subscriptions/{subscription_id}/logs")
 def reset_usage_logs(subscription_id: str, db: Session = Depends(get_db)):
-    # Find all watch time logs for this specific platform and delete them
     db.query(models.UsageLog).filter(models.UsageLog.subscription_id == subscription_id).delete()
     db.commit()
     return {"message": "Logs reset successfully"}
