@@ -15,6 +15,18 @@ import random
 import requests 
 from scheduler import start_scheduler
 
+# --- 1. APP INITIALIZATION & CORS ---
+app = FastAPI(title="Subscription Tracker API")
+
+# Nuclear CORS Fix - Wildcard allowed for Beta
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"], 
+    allow_headers=["*"], 
+)
+
 # --- TMDB AI BRAIN CONFIGURATION ---
 TMDB_API_KEY = "67d54ceab737ab27c955f2846c85b520"
 
@@ -61,26 +73,13 @@ async def lifespan(app: FastAPI):
     print("🛑 Shutting down API and Background Scheduler...")
     task_scheduler.shutdown()
 
-# Initialize FastAPI with the lifespan
-app = FastAPI(
-    title="Subscription Tracker API",
-    lifespan=lifespan 
-)
-
-# --- CORS CONFIGURATION (THE WILDCARD FIX) ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"], 
-    allow_headers=["*"], 
-)
+# Re-assigning lifespan to the app
+app.router.lifespan_context = lifespan
 
 @app.get("/")
 def read_root():
     return {"status": "online"}
 
-# --- SILENCE FAVICON ERROR ---
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
     """Returns an empty dummy response to silence browser favicon requests."""
@@ -91,8 +90,8 @@ def favicon():
 @app.post("/token")
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Authenticates a user and returns a JWT token."""
-    # Safety Valve: Truncate password to 72 chars to prevent Bcrypt ValueError
-    safe_password = form_data.password[:72]
+    # CRITICAL FIX: Truncate password to 72 chars to prevent Bcrypt crash
+    safe_password = str(form_data.password)[:71]
     
     user = crud.get_user_by_email(db, email=form_data.username.lower())
     
@@ -103,9 +102,7 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    access_token = auth.create_access_token(
-        data={"sub": user.email}
-    )
+    access_token = auth.create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
 # --- USER ROUTES ---
@@ -113,8 +110,8 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
 @app.post("/users/", response_model=schemas.UserResponse)
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     """Registers a new user."""
-    # Safety Valve: Truncate password to 72 chars to prevent Bcrypt ValueError
-    user.password = user.password[:72]
+    # CRITICAL FIX: Truncate password to 72 chars to prevent Bcrypt crash
+    user.password = str(user.password)[:71]
     
     db_user = crud.get_user_by_email(db, email=user.email)
     if db_user:
@@ -194,7 +191,7 @@ def get_user_alerts(
     alerts = recommendation.generate_alerts_for_user(db=db, user_id=current_user.id)
     return alerts
 
-# --- NETFLIX-STYLE RECOMMENDATION ROUTE (WITH TRAILERS & WATCH PROVIDERS) ---
+# --- NETFLIX-STYLE RECOMMENDATION ROUTE ---
 
 @app.get("/recommendations")
 def get_recommendations(current_user: models.User = Depends(auth.get_current_user)):
@@ -248,21 +245,16 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
             media_type = show.get('media_type', 'tv') 
             show_id = show['id']
 
-            # FETCH THE YOUTUBE TRAILER
             trailer_url = None
             try:
                 vid_url = f"https://api.themoviedb.org/3/{media_type}/{show_id}/videos?api_key={TMDB_API_KEY}"
                 vid_resp = requests.get(vid_url).json()
                 yt_videos = [v for v in vid_resp.get('results', []) if v.get('site') == 'YouTube']
-                
                 if yt_videos:
-                    best_vid = next((v for v in yt_videos if v.get('type') == 'Trailer'), None)
-                    if not best_vid: best_vid = next((v for v in yt_videos if v.get('type') == 'Teaser'), None)
-                    if not best_vid: best_vid = yt_videos[0]
+                    best_vid = next((v for v in yt_videos if v.get('type') == 'Trailer'), yt_videos[0])
                     trailer_url = f"https://www.youtube.com/embed/{best_vid.get('key')}?autoplay=1"
             except: pass
 
-            # FETCH WATCH PROVIDERS
             providers = []
             watch_link = None
             try:
@@ -272,10 +264,7 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
                 watch_link = in_data.get('link')
                 in_providers = in_data.get('flatrate', [])
                 for prov in in_providers[:2]: 
-                    providers.append({
-                        "name": prov.get("provider_name"),
-                        "logo": f"https://image.tmdb.org/t/p/w45{prov.get('logo_path')}"
-                    })
+                    providers.append({"name": prov.get("provider_name"), "logo": f"https://image.tmdb.org/t/p/w45{prov.get('logo_path')}"})
             except: pass
 
             results.append({
@@ -298,7 +287,7 @@ def log_usage(usage: schemas.UsageLogCreate, db: Session = Depends(get_db)):
     return crud.log_subscription_usage(db=db, usage=usage)
 
 
-# --- EXTENSION USAGE ROUTE (AI BRAIN INTEGRATED) ---
+# --- EXTENSION USAGE ROUTE ---
 @app.post("/usage/extension")
 def log_usage_from_extension(
     usage_req: schemas.UsageLogExtensionCreate, 
@@ -307,7 +296,6 @@ def log_usage_from_extension(
 ):
     """Receives ping from Chrome Extension and securely logs it to the authenticated user."""
     platform = crud.get_or_create_platform(db, platform_name=usage_req.platform_name)
-    
     title = getattr(usage_req, 'title', None)
     if title and title != "Unknown Title":
         try:
@@ -316,23 +304,18 @@ def log_usage_from_extension(
                 current_tastes = getattr(current_user, 'taste_profile', []) or []
                 updated_tastes = list(set(current_tastes + discovered_genres))
                 current_user.taste_profile = updated_tastes[-20:]
-                db.commit() # Immediate save of DNA
+                db.commit()
                 print(f"🎬 AI Brain: Learned tastes for {current_user.email} from '{title}'")
         except Exception as e:
             print(f"⚠️ TMDB Error: {e}")
 
-    # Log minutes to specific subscription if user has it tracked
     sub = db.query(models.Subscription).filter(
         models.Subscription.user_id == current_user.id,
         models.Subscription.platform_id == platform.id
     ).first()
     
     if sub:
-        db_usage = models.UsageLog(
-            subscription_id=sub.id,
-            date_logged=usage_req.date_logged,
-            minutes_used=usage_req.minutes_used
-        )
+        db_usage = models.UsageLog(subscription_id=sub.id, date_logged=usage_req.date_logged, minutes_used=usage_req.minutes_used)
         db.add(db_usage)
         db.commit()
     
