@@ -15,6 +15,18 @@ import random
 import requests 
 from scheduler import start_scheduler
 
+# --- 1. APP INITIALIZATION & CORS ---
+app = FastAPI(title="Subscription Tracker API")
+
+# Placing CORS at the absolute top to prevent browser blocking
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"], 
+    allow_headers=["*"], 
+)
+
 # --- TMDB AI BRAIN CONFIGURATION ---
 TMDB_API_KEY = "67d54ceab737ab27c955f2846c85b520"
 
@@ -46,40 +58,24 @@ def fetch_genres_for_title(title: str):
 # Create database tables
 models.Base.metadata.create_all(bind=engine)
 
-# Define the lifespan of the app (Startup and Shutdown events)
+# --- LIFESPAN MANAGER ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- STARTUP ---
     print("🚀 Starting API and Background Scheduler...")
     task_scheduler.start()
-    
-    yield # The application runs here
-    
+    yield
     # --- SHUTDOWN ---
     print("🛑 Shutting down API and Background Scheduler...")
     task_scheduler.shutdown()
 
-# Initialize FastAPI with the lifespan
-app = FastAPI(
-    title="Subscription Tracker API",
-    lifespan=lifespan 
-)
-
-# --- CORS CONFIGURATION (THE WILDCARD FIX) ---
-# Using ["*"] ensures that no matter what your Vercel URL is, the browser won't block it.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"], 
-    allow_headers=["*"], 
-)
+# Re-assigning lifespan to the app
+app.router.lifespan_context = lifespan
 
 @app.get("/")
 def read_root():
     return {"status": "online"}
 
-# --- SILENCE FAVICON ERROR ---
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
     """Returns an empty dummy response to silence browser favicon requests."""
@@ -214,13 +210,11 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
         
         for show in regional_data:
             if show['id'] not in seen_ids and len(raw_shows) < 3:
-                raw_shows.append(show)
-                seen_ids.add(show['id'])
+                raw_shows.append(show); seen_ids.add(show['id'])
                 
         for show in global_data:
             if show['id'] not in seen_ids and len(raw_shows) < 6:
-                raw_shows.append(show)
-                seen_ids.add(show['id'])
+                raw_shows.append(show); seen_ids.add(show['id'])
 
         if not raw_shows:
             return []
@@ -237,8 +231,7 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
             if show_genres:
                 for g_id in show_genres:
                     if g_id in TMDB_GENRE_MAP:
-                        display_genre = TMDB_GENRE_MAP[g_id]
-                        break 
+                        display_genre = TMDB_GENRE_MAP[g_id]; break 
             
             image_path = show.get('backdrop_path') or show.get('poster_path')
             media_type = show.get('media_type', 'tv') 
@@ -256,8 +249,7 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
                     if not best_vid: best_vid = next((v for v in yt_videos if v.get('type') == 'Teaser'), None)
                     if not best_vid: best_vid = yt_videos[0]
                     trailer_url = f"https://www.youtube.com/embed/{best_vid.get('key')}?autoplay=1"
-            except Exception:
-                pass
+            except: pass
 
             # FETCH WATCH PROVIDERS
             providers = []
@@ -269,22 +261,14 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
                 watch_link = in_data.get('link')
                 in_providers = in_data.get('flatrate', [])
                 for prov in in_providers[:2]: 
-                    providers.append({
-                        "name": prov.get("provider_name"),
-                        "logo": f"https://image.tmdb.org/t/p/w45{prov.get('logo_path')}"
-                    })
-            except Exception:
-                pass
+                    providers.append({"name": prov.get("provider_name"), "logo": f"https://image.tmdb.org/t/p/w45{prov.get('logo_path')}"})
+            except: pass
 
             results.append({
-                "id": show_id,
-                "title": show.get('name', show.get('title', 'Unknown Title')),
-                "genre": display_genre, 
-                "match": f"{min(99, int(match_val))}% Match",
+                "id": show_id, "title": show.get('name', show.get('title', 'Unknown Title')),
+                "genre": display_genre, "match": f"{min(99, int(match_val))}% Match",
                 "image": f"https://image.tmdb.org/t/p/w780{image_path}" if image_path else "https://images.unsplash.com/photo-1584905066893-7d5c142ba4e1",
-                "trailer": trailer_url,
-                "providers": providers,
-                "watch_link": watch_link 
+                "trailer": trailer_url, "providers": providers, "watch_link": watch_link 
             })
         
         return results
@@ -292,7 +276,7 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
         print(f"❌ API Error: {e}")
         return []
 
-# --- USAGE LOGGING ROUTE ---
+# --- USAGE LOGGING ---
 
 @app.post("/usage/", response_model=schemas.UsageLogResponse)
 def log_usage(usage: schemas.UsageLogCreate, db: Session = Depends(get_db)):
