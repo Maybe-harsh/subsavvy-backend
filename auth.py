@@ -5,10 +5,14 @@ from passlib.context import CryptContext
 from fastapi.security import OAuth2PasswordBearer
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
+import os
+from dotenv import load_dotenv
 import models, database
 
-# In production, change this to a secure random string and store it in an .env file
-SECRET_KEY = "your-super-secret-key-change-this-later"
+load_dotenv()
+
+# Load secret key from environment variable (set this in Render's Environment tab)
+SECRET_KEY = os.getenv("SECRET_KEY", "fallback-only-for-local-dev-change-this")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
@@ -19,13 +23,13 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 def verify_password(plain_password, hashed_password):
-    # THE SAFETY VALVE: Truncate input to 71 chars to match the hash limit
-    safe_password = str(plain_password)[:71]
+    # Truncate by BYTES (not characters) to safely handle Unicode/emoji passwords
+    safe_password = str(plain_password).encode('utf-8')[:72].decode('utf-8', 'ignore')
     return pwd_context.verify(safe_password, hashed_password)
 
 def get_password_hash(password):
-    # THE SAFETY VALVE: Truncate input to 71 chars to prevent Bcrypt ValueError
-    safe_password = str(password)[:71]
+    # Truncate by BYTES (not characters) to safely handle Unicode/emoji passwords
+    safe_password = str(password).encode('utf-8')[:72].decode('utf-8', 'ignore')
     return pwd_context.hash(safe_password)
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
@@ -52,7 +56,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-    
+
     user = db.query(models.User).filter(models.User.email == email).first()
     if user is None:
         raise credentials_exception

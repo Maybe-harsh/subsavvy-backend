@@ -12,20 +12,20 @@ import auth
 import recommendation
 from scheduler import task_scheduler
 import random
-import requests 
+import requests
 from scheduler import start_scheduler
 
 # --- TMDB AI BRAIN CONFIGURATION ---
 TMDB_API_KEY = "67d54ceab737ab27c955f2846c85b520"
 
 TMDB_GENRE_MAP = {
-    28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 
-    80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family", 
-    14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music", 
-    9648: "Mystery", 10749: "Romance", 878: "Science Fiction", 
+    28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy",
+    80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family",
+    14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music",
+    9648: "Mystery", 10749: "Romance", 878: "Science Fiction",
     10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
-    10759: "Action & Adventure", 10765: "Sci-Fi & Fantasy", 
-    10768: "War & Politics", 10762: "Kids", 10766: "Soap", 
+    10759: "Action & Adventure", 10765: "Sci-Fi & Fantasy",
+    10768: "War & Politics", 10762: "Kids", 10766: "Soap",
     10767: "Talk", 10763: "News", 10764: "Reality"
 }
 
@@ -54,9 +54,9 @@ async def lifespan(app: FastAPI):
     models.Base.metadata.create_all(bind=engine)
     print("🚀 Starting API and Background Scheduler...")
     task_scheduler.start()
-    
-    yield # The application runs here
-    
+
+    yield  # The application runs here
+
     # --- SHUTDOWN ---
     print("🛑 Shutting down API and Background Scheduler...")
     task_scheduler.shutdown()
@@ -64,16 +64,22 @@ async def lifespan(app: FastAPI):
 # Initialize FastAPI with the lifespan
 app = FastAPI(
     title="Subscription Tracker API",
-    lifespan=lifespan 
+    lifespan=lifespan
 )
 
-# --- CORS CONFIGURATION (THE WILDCARD FIX) ---
+# --- CORS CONFIGURATION ---
+# FIX: allow_origins=["*"] cannot be used with allow_credentials=True.
+# Use your exact Vercel URL instead.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=[
+        "https://subsavvy-frontend-virid.vercel.app",
+        "http://localhost:3000",   # for local development
+        "http://localhost:5173",   # for Vite local development
+    ],
     allow_credentials=True,
-    allow_methods=["*"], 
-    allow_headers=["*"], 
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.get("/")
@@ -91,19 +97,16 @@ def favicon():
 @app.post("/token")
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Authenticates a user and returns a JWT token."""
-    # Aggressive Bcrypt Truncation
-    raw_pwd = str(form_data.password)
-    safe_password = raw_pwd.encode('utf-8')[:71].decode('utf-8', 'ignore')
-    
+    # auth.verify_password handles safe truncation internally
     user = crud.get_user_by_email(db, email=form_data.username.lower())
-    
-    if not user or not auth.verify_password(safe_password, user.password_hash):
+
+    if not user or not auth.verify_password(form_data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     access_token = auth.create_access_token(
         data={"sub": user.email}
     )
@@ -114,10 +117,7 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
 @app.post("/users/", response_model=schemas.UserResponse)
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     """Registers a new user."""
-    # Aggressive Bcrypt Truncation
-    raw_pwd = str(user.password)
-    user.password = raw_pwd.encode('utf-8')[:71].decode('utf-8', 'ignore')
-    
+    # auth.get_password_hash handles safe byte truncation internally
     db_user = crud.get_user_by_email(db, email=user.email)
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -132,13 +132,13 @@ def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
 
 @app.post("/users/me/subscriptions/", response_model=schemas.SubscriptionResponse)
 def create_subscription_for_user(
-    subscription_req: schemas.SubscriptionCreateFrontend, 
+    subscription_req: schemas.SubscriptionCreateFrontend,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
     """Adds a new subscription to the currently authenticated user's account."""
     platform = crud.get_or_create_platform(db, platform_name=subscription_req.platform_name)
-    
+
     db_subscription = schemas.SubscriptionCreate(
         platform_id=platform.id,
         cost=subscription_req.cost,
@@ -146,13 +146,13 @@ def create_subscription_for_user(
         next_billing_date=subscription_req.next_billing_date,
         status="Active"
     )
-    
+
     return crud.create_user_subscription(db=db, subscription=db_subscription, user_id=current_user.id)
 
 @app.get("/users/me/subscriptions/", response_model=list[schemas.SubscriptionResponse])
 def read_subscriptions(
-    skip: int = 0, 
-    limit: int = 100, 
+    skip: int = 0,
+    limit: int = 100,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
@@ -202,7 +202,7 @@ def get_user_alerts(
 def get_recommendations(current_user: models.User = Depends(auth.get_current_user)):
     print(f"🔍 AI: Fetching Netflix-Style Mix with Providers for {current_user.email}...")
     tastes = getattr(current_user, 'taste_profile', []) or []
-    
+
     reverse_genre_map = {v: k for k, v in TMDB_GENRE_MAP.items()}
     genre_ids = [reverse_genre_map.get(g) for g in tastes if g in reverse_genre_map]
     genre_str = "|".join(map(str, genre_ids)) if genre_ids else ""
@@ -217,14 +217,14 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
     try:
         global_data = requests.get(global_url).json().get('results', [])
         regional_data = requests.get(regional_url).json().get('results', [])
-        
+
         raw_shows = []
-        seen_ids = set() 
-        
+        seen_ids = set()
+
         for show in regional_data:
             if show['id'] not in seen_ids and len(raw_shows) < 3:
                 raw_shows.append(show); seen_ids.add(show['id'])
-                
+
         for show in global_data:
             if show['id'] not in seen_ids and len(raw_shows) < 6:
                 raw_shows.append(show); seen_ids.add(show['id'])
@@ -235,19 +235,19 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
         random.shuffle(raw_shows)
         results = []
 
-        for show in raw_shows: 
+        for show in raw_shows:
             show_genres = show.get('genre_ids', [])
             overlap = len(set(show_genres) & set(genre_ids)) if genre_ids else 0
             match_val = 75 + (overlap * 5) + (show.get('vote_average', 0) * 2)
-            
+
             display_genre = "Popular"
             if show_genres:
                 for g_id in show_genres:
                     if g_id in TMDB_GENRE_MAP:
-                        display_genre = TMDB_GENRE_MAP[g_id]; break 
-            
+                        display_genre = TMDB_GENRE_MAP[g_id]; break
+
             image_path = show.get('backdrop_path') or show.get('poster_path')
-            media_type = show.get('media_type', 'tv') 
+            media_type = show.get('media_type', 'tv')
             show_id = show['id']
 
             # FETCH THE YOUTUBE TRAILER
@@ -256,7 +256,7 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
                 vid_url = f"https://api.themoviedb.org/3/{media_type}/{show_id}/videos?api_key={TMDB_API_KEY}"
                 vid_resp = requests.get(vid_url).json()
                 yt_videos = [v for v in vid_resp.get('results', []) if v.get('site') == 'YouTube']
-                
+
                 if yt_videos:
                     best_vid = next((v for v in yt_videos if v.get('type') == 'Trailer'), None)
                     if not best_vid: best_vid = next((v for v in yt_videos if v.get('type') == 'Teaser'), None)
@@ -273,7 +273,7 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
                 in_data = prov_resp.get('results', {}).get('IN', {})
                 watch_link = in_data.get('link')
                 in_providers = in_data.get('flatrate', [])
-                for prov in in_providers[:2]: 
+                for prov in in_providers[:2]:
                     providers.append({
                         "name": prov.get("provider_name"),
                         "logo": f"https://image.tmdb.org/t/p/w45{prov.get('logo_path')}"
@@ -284,9 +284,9 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
                 "id": show_id, "title": show.get('name', show.get('title', 'Unknown Title')),
                 "genre": display_genre, "match": f"{min(99, int(match_val))}% Match",
                 "image": f"https://image.tmdb.org/t/p/w780{image_path}" if image_path else "https://images.unsplash.com/photo-1584905066893-7d5c142ba4e1",
-                "trailer": trailer_url, "providers": providers, "watch_link": watch_link 
+                "trailer": trailer_url, "providers": providers, "watch_link": watch_link
             })
-        
+
         return results
     except Exception as e:
         print(f"❌ API Error: {e}")
@@ -299,17 +299,16 @@ def log_usage(usage: schemas.UsageLogCreate, db: Session = Depends(get_db)):
     """Receives ping from browser extension/app about minutes watched."""
     return crud.log_subscription_usage(db=db, usage=usage)
 
-
 # --- EXTENSION USAGE ROUTE (AI BRAIN INTEGRATED) ---
 @app.post("/usage/extension")
 def log_usage_from_extension(
-    usage_req: schemas.UsageLogExtensionCreate, 
+    usage_req: schemas.UsageLogExtensionCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
     """Receives ping from Chrome Extension and securely logs it to the authenticated user."""
     platform = crud.get_or_create_platform(db, platform_name=usage_req.platform_name)
-    
+
     title = getattr(usage_req, 'title', None)
     if title and title != "Unknown Title":
         try:
@@ -318,17 +317,16 @@ def log_usage_from_extension(
                 current_tastes = getattr(current_user, 'taste_profile', []) or []
                 updated_tastes = list(set(current_tastes + discovered_genres))
                 current_user.taste_profile = updated_tastes[-20:]
-                db.commit() # Immediate save of DNA
+                db.commit()
                 print(f"🎬 AI Brain: Learned tastes for {current_user.email} from '{title}'")
         except Exception as e:
             print(f"⚠️ TMDB Error: {e}")
 
-    # Log minutes to specific subscription if user has it tracked
     sub = db.query(models.Subscription).filter(
         models.Subscription.user_id == current_user.id,
         models.Subscription.platform_id == platform.id
     ).first()
-    
+
     if sub:
         db_usage = models.UsageLog(
             subscription_id=sub.id,
@@ -337,7 +335,7 @@ def log_usage_from_extension(
         )
         db.add(db_usage)
         db.commit()
-    
+
     return {"status": "success", "logged_minutes": usage_req.minutes_used, "title": title}
 
 @app.on_event("startup")
