@@ -15,18 +15,6 @@ import random
 import requests 
 from scheduler import start_scheduler
 
-# --- 1. APP INITIALIZATION & CORS ---
-app = FastAPI(title="Subscription Tracker API")
-
-# Placing CORS at the absolute top to prevent browser blocking
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"], 
-    allow_headers=["*"], 
-)
-
 # --- TMDB AI BRAIN CONFIGURATION ---
 TMDB_API_KEY = "67d54ceab737ab27c955f2846c85b520"
 
@@ -58,24 +46,41 @@ def fetch_genres_for_title(title: str):
 # Create database tables
 models.Base.metadata.create_all(bind=engine)
 
-# --- LIFESPAN MANAGER ---
+# Define the lifespan of the app (Startup and Shutdown events)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- STARTUP ---
+    print("🛠️ Syncing Database Tables...")
+    models.Base.metadata.create_all(bind=engine)
     print("🚀 Starting API and Background Scheduler...")
     task_scheduler.start()
-    yield
+    
+    yield # The application runs here
+    
     # --- SHUTDOWN ---
     print("🛑 Shutting down API and Background Scheduler...")
     task_scheduler.shutdown()
 
-# Re-assigning lifespan to the app
-app.router.lifespan_context = lifespan
+# Initialize FastAPI with the lifespan
+app = FastAPI(
+    title="Subscription Tracker API",
+    lifespan=lifespan 
+)
+
+# --- CORS CONFIGURATION (THE WILDCARD FIX) ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"], 
+    allow_headers=["*"], 
+)
 
 @app.get("/")
 def read_root():
     return {"status": "online"}
 
+# --- SILENCE FAVICON ERROR ---
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
     """Returns an empty dummy response to silence browser favicon requests."""
@@ -86,9 +91,12 @@ def favicon():
 @app.post("/token")
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Authenticates a user and returns a JWT token."""
+    # Safety Valve: Truncate password to 72 chars to prevent Bcrypt ValueError
+    safe_password = form_data.password[:72]
+    
     user = crud.get_user_by_email(db, email=form_data.username.lower())
     
-    if not user or not auth.verify_password(form_data.password, user.password_hash):
+    if not user or not auth.verify_password(safe_password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -105,6 +113,9 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
 @app.post("/users/", response_model=schemas.UserResponse)
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     """Registers a new user."""
+    # Safety Valve: Truncate password to 72 chars to prevent Bcrypt ValueError
+    user.password = user.password[:72]
+    
     db_user = crud.get_user_by_email(db, email=user.email)
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -261,7 +272,10 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
                 watch_link = in_data.get('link')
                 in_providers = in_data.get('flatrate', [])
                 for prov in in_providers[:2]: 
-                    providers.append({"name": prov.get("provider_name"), "logo": f"https://image.tmdb.org/t/p/w45{prov.get('logo_path')}"})
+                    providers.append({
+                        "name": prov.get("provider_name"),
+                        "logo": f"https://image.tmdb.org/t/p/w45{prov.get('logo_path')}"
+                    })
             except: pass
 
             results.append({
