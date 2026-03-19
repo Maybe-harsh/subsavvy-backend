@@ -196,7 +196,7 @@ def get_user_alerts(
     alerts = recommendation.generate_alerts_for_user(db=db, user_id=current_user.id)
     return alerts
 
-# --- NETFLIX-STYLE RECOMMENDATION ROUTE ---
+# --- NETFLIX-STYLE RECOMMENDATION ROUTE (WITH TRAILERS & WATCH PROVIDERS) ---
 
 @app.get("/recommendations")
 def get_recommendations(current_user: models.User = Depends(auth.get_current_user)):
@@ -250,6 +250,7 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
             media_type = show.get('media_type', 'tv') 
             show_id = show['id']
 
+            # FETCH THE YOUTUBE TRAILER
             trailer_url = None
             try:
                 vid_url = f"https://api.themoviedb.org/3/{media_type}/{show_id}/videos?api_key={TMDB_API_KEY}"
@@ -263,6 +264,7 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
                     trailer_url = f"https://www.youtube.com/embed/{best_vid.get('key')}?autoplay=1"
             except: pass
 
+            # FETCH WATCH PROVIDERS
             providers = []
             watch_link = None
             try:
@@ -272,7 +274,10 @@ def get_recommendations(current_user: models.User = Depends(auth.get_current_use
                 watch_link = in_data.get('link')
                 in_providers = in_data.get('flatrate', [])
                 for prov in in_providers[:2]: 
-                    providers.append({"name": prov.get("provider_name"), "logo": f"https://image.tmdb.org/t/p/w45{prov.get('logo_path')}"})
+                    providers.append({
+                        "name": prov.get("provider_name"),
+                        "logo": f"https://image.tmdb.org/t/p/w45{prov.get('logo_path')}"
+                    })
             except: pass
 
             results.append({
@@ -295,7 +300,7 @@ def log_usage(usage: schemas.UsageLogCreate, db: Session = Depends(get_db)):
     return crud.log_subscription_usage(db=db, usage=usage)
 
 
-# --- EXTENSION USAGE ROUTE ---
+# --- EXTENSION USAGE ROUTE (AI BRAIN INTEGRATED) ---
 @app.post("/usage/extension")
 def log_usage_from_extension(
     usage_req: schemas.UsageLogExtensionCreate, 
@@ -313,7 +318,7 @@ def log_usage_from_extension(
                 current_tastes = getattr(current_user, 'taste_profile', []) or []
                 updated_tastes = list(set(current_tastes + discovered_genres))
                 current_user.taste_profile = updated_tastes[-20:]
-                db.commit()
+                db.commit() # Immediate save of DNA
                 print(f"🎬 AI Brain: Learned tastes for {current_user.email} from '{title}'")
         except Exception as e:
             print(f"⚠️ TMDB Error: {e}")
