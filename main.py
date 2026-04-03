@@ -51,6 +51,10 @@ def fetch_genres_for_title(title: str):
 async def lifespan(app: FastAPI):
     # --- STARTUP ---
     print("🛠️ Syncing Database Tables...")
+    # WARNING: This deletes the tables!
+    models.Base.metadata.drop_all(bind=engine)
+    
+    # This recreates them with the new Trakt column!
     models.Base.metadata.create_all(bind=engine)
     
     print("🚀 Starting API and Background Scheduler...")
