@@ -75,7 +75,3 @@ class UsageLogExtensionCreate(BaseModel):
     minutes_used: int
     date_logged: date
     title: Optional[str] = None
-    
-# --- TRAKT OAUTH SCHEMA ---
-class TraktCallback(BaseModel):
-    code: str
