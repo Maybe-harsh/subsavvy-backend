@@ -15,7 +15,7 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     taste_profile = Column(JSON, default=list) # Stores your AI keywords like ["dark fantasy", "sci-fi"]
     created_at = Column(DateTime, default=datetime.utcnow)
-
+    trakt_access_token = Column(String, nullable=True)
     # Relationships
     subscriptions = relationship("Subscription", back_populates="user", cascade="all, delete-orphan")
 

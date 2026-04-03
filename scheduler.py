@@ -5,6 +5,12 @@ from email.mime.multipart import MIMEMultipart
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
+from datetime import date
+
+# Import our new Trakt API function, plus schemas and crud for saving data
+from integrations import fetch_tv_watch_history
+import schemas
+import crud
 
 from database import SessionLocal
 import models
@@ -16,7 +22,7 @@ load_dotenv()
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
 
-# FIX 1: Restored the production URL as the default fallback instead of localhost
+# Restored the production URL as the default fallback instead of localhost
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://subsavvy-frontend-virid.vercel.app")
 
 def send_email(to_email, subject, body):
@@ -54,6 +60,33 @@ def run_daily_ai_recommendations():
 
         for user in users:
             print(f"Analyzing data for user: {user.email}")
+
+            # ---------------------------------------------------------
+            # NEW SMART TV TRACKING BLOCK
+            # ---------------------------------------------------------
+            if user.trakt_access_token:
+                print(f"📺 Pulling Smart TV data for {user.email}...")
+                tv_minutes = fetch_tv_watch_history(user.trakt_access_token)
+                
+                if tv_minutes > 0:
+                    # Make sure a "Smart TV" platform exists in our database
+                    tv_platform = crud.get_or_create_platform(db, "Smart TV via Trakt")
+                    
+                    # See if they have a generic TV subscription logged
+                    tv_sub = db.query(models.Subscription).filter(
+                        models.Subscription.user_id == user.id,
+                        models.Subscription.platform_id == tv_platform.id
+                    ).first()
+                    
+                    # If they do, log the minutes so the AI can analyze it!
+                    if tv_sub:
+                        usage_log = schemas.UsageLogCreate(
+                            subscription_id=str(tv_sub.id),
+                            date_logged=date.today(),
+                            minutes_used=tv_minutes
+                        )
+                        crud.log_subscription_usage(db, usage_log)
+            # ---------------------------------------------------------
 
             alerts = generate_alerts_for_user(db, str(user.id))
             urgent_alerts = [a for a in alerts if a['type'] in ['alert', 'warning']]
@@ -93,7 +126,7 @@ def run_daily_ai_recommendations():
     finally:
         db.close()
 
-# FIX 2: Added Timezone awareness so 8 AM triggers locally, not in Server UTC
+# Added Timezone awareness so 8 AM triggers locally, not in Server UTC
 task_scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
 
 # Runs exactly once a day at 8:00 AM IST

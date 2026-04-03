@@ -355,3 +355,41 @@ def reset_usage_logs(
     db.query(models.UsageLog).filter(models.UsageLog.subscription_id == subscription_id).delete()
     db.commit()
     return {"message": "Logs reset successfully"}
+
+@app.post("/auth/trakt/callback")
+def connect_trakt_account(
+    payload: schemas.TraktCallback, 
+    db: Session = Depends(get_db), 
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """Trades the temporary OAuth code for a permanent Trakt Access Token."""
+    
+    # Get your secret keys from the .env file
+    TRAKT_CLIENT_ID = os.getenv("TRAKT_CLIENT_ID")
+    TRAKT_CLIENT_SECRET = os.getenv("TRAKT_CLIENT_SECRET")
+    REDIRECT_URI = os.getenv("FRONTEND_URL", "https://subsavvy-frontend-virid.vercel.app") + "/dashboard"
+
+    # 1. Ask Trakt for the token
+    response = requests.post(
+        "https://api.trakt.tv/oauth/token",
+        json={
+            "code": payload.code,
+            "client_id": TRAKT_CLIENT_ID,
+            "client_secret": TRAKT_CLIENT_SECRET,
+            "redirect_uri": REDIRECT_URI,
+            "grant_type": "authorization_code"
+        }
+    )
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Failed to verify Trakt code.")
+
+    # 2. Extract the token from Trakt's response
+    trakt_data = response.json()
+    access_token = trakt_data.get("access_token")
+
+    # 3. Save it to your database so we can use it every day!
+    current_user.trakt_access_token = access_token
+    db.commit()
+
+    return {"message": "Successfully connected to Trakt.tv!"}
